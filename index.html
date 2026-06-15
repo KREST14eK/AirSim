@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirSim v6</title>
+
+<style>
+body{margin:0;background:#0b0b0f;color:white;font-family:-apple-system}
+.screen{display:none;padding:15px}
+.active{display:block}
+
+.wallet{
+ background:linear-gradient(180deg,#2a7cff,#0044aa);
+ border-radius:25px;padding:15px;margin-bottom:10px;
+ transition:0.4s;
+}
+
+.card{background:#14141f;padding:12px;border-radius:15px;margin:8px 0}
+
+button{padding:10px;border:none;border-radius:10px;background:#2a7cff;color:white;margin-top:5px}
+input,select{width:100%;padding:10px;border-radius:10px;border:none;margin-top:5px}
+
+.seat{width:28px;height:28px;display:inline-block;margin:3px;background:#333;text-align:center;line-height:28px;border-radius:6px}
+.sel{background:#2a7cff}
+.confirmed{background:red}
+.phantom{background:#777}
+
+.progress{height:6px;background:#222;border-radius:10px;overflow:hidden}
+.bar{height:6px;background:#4da3ff;width:0%}
+
+.toast{
+ position:fixed;bottom:20px;left:50%;
+ transform:translateX(-50%);
+ background:#222;padding:10px;border-radius:10px;display:none
+}
+</style>
+</head>
+
+<body>
+
+<div id="toast" class="toast"></div>
+
+<div id="menu" class="screen active">
+<h2>AirSim v6</h2>
+<button onclick="show('login')">Пассажир</button>
+<button onclick="enter('pilot')">Пилот</button>
+<button onclick="enter('steward')">Стюард</button>
+<button onclick="enter('manager')">Менеджер</button>
+<button onclick="admin()">Admin 831</button>
+</div>
+
+<div id="login" class="screen">
+<input id="l"><input id="p" type="password">
+<button onclick="login()">Войти</button>
+<button onclick="reg()">Регистрация</button>
+</div>
+
+<div id="user" class="screen">
+<div id="wallet" class="wallet"></div>
+<button onclick="openBuy()">Купить билет</button>
+<div id="tickets"></div>
+</div>
+
+<div id="buy" class="screen">
+<div id="seats"></div>
+
+<input id="adults" placeholder="Взрослые" value="1">
+<input id="children" placeholder="Дети" value="0">
+
+<select id="cls">
+<option value="eco">Economy</option>
+<option value="prem">Premium</option>
+<option value="vip">VIP</option>
+</select>
+
+<input id="meal" placeholder="Блюдо (premium/vip)">
+<button onclick="buy()">Купить</button>
+</div>
+
+<div id="pilot" class="screen">
+<h3 id="flightStatus"></h3>
+
+<button onclick="nextStatus()">Следующий статус</button>
+<button onclick="toggleTurb()">Турбулентность</button>
+
+<button onclick="startConfirm()">Руление → Подтверждение</button>
+
+<div id="pilotSeats"></div>
+<button onclick="applyConfirm()">Далее</button>
+
+<button onclick="addProg()">+прогресс</button>
+<div class="progress"><div id="bar" class="bar"></div></div>
+
+<canvas id="map" width="300" height="100"></canvas>
+<div id="flightInfo"></div>
+</div>
+
+<script type="module">
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, collection, addDoc, onSnapshot, updateDoc, doc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const app = initializeApp({
+ apiKey:"AlzaSyDfCJ5ojorbuk_904gVxDb6SSSvjyPmBcc",
+ authDomain:"airsim-88c0f.firebaseapp.com",
+ projectId:"airsim-88c0f"
+});
+const db = getFirestore(app);
+
+// ===== STATE =====
+let user=null;
+let tickets=[];
+let progress=0;
+let turb=false;
+let confirmSeats=[];
+let lang="ru";
+let statusIndex=0;
+
+// ===== STATUSES =====
+const statuses = [
+ ["Ожидает","Waiting"],
+ ["Регистрация","Check-in"],
+ ["Загрузка","Boarding"],
+ ["Финальная посадка","Final Call"],
+ ["Руление","Taxi"],
+ ["Взлет","Takeoff"],
+ ["Круиз","Cruise"],
+ ["Посадка","Landing"],
+ ["Руление ПП","Taxi After Landing"],
+ ["Разгрузка","Unloading"],
+ ["Отдыхает","Idle"]
+];
+
+// переключение языка каждые 2 минуты
+setInterval(()=>{
+ lang = lang==="ru" ? "en" : "ru";
+ updateStatusUI();
+},120000);
+
+function updateStatusUI(){
+ flightStatus.innerText = statuses[statusIndex][lang==="ru"?0:1];
+}
+
+// ===== REALTIME =====
+onSnapshot(collection(db,"tickets"),snap=>{
+ tickets = snap.docs.map(d=>({id:d.id,...d.data()}));
+ renderTickets();
+});
+
+// ===== NAV =====
+window.show=s=>{
+ document.querySelectorAll(".screen").forEach(x=>x.classList.remove("active"));
+ document.getElementById(s).classList.add("active");
+}
+window.enter=r=>show(r);
+window.admin=()=>{ if(prompt("код")=="831") show("pilot") }
+
+// ===== AUTH =====
+window.reg=async()=>{
+ await addDoc(collection(db,"users"),{login:l.value,pass:p.value,balance:1000,miles:0});
+ alert("ok");
+}
+window.login=async()=>{
+ onSnapshot(collection(db,"users"),snap=>{
+  snap.forEach(d=>{
+   let x=d.data();
+   if(x.login==l.value && x.pass==p.value) user={id:d.id,...x};
+  });
+  if(user){show("user");renderUser();}
+ });
+}
+
+// ===== USER =====
+function renderUser(){
+ wallet.innerText = "Баланс: "+user.balance;
+}
+
+window.openBuy=()=>{
+ show("buy");
+ renderSeats();
+}
+
+function renderSeats(){
+ seats.innerHTML="";
+ for(let i=1;i<=30;i++){
+  let s=document.createElement("div");
+  s.className="seat";
+  s.innerText=i;
+  s.onclick=()=>s.classList.toggle("sel");
+  seats.appendChild(s);
+ }
+}
+
+// ===== BUY =====
+window.buy=async()=>{
+ let sel=[...document.querySelectorAll(".sel")].map(x=>x.innerText);
+
+ let pass=[];
+ let names=["Alex","Emma","Max","Leo","Lily"];
+
+ for(let i=0;i<+adults.value;i++){
+  pass.push({seat:sel[i],phantom:false,name:names[Math.random()*names.length|0]});
+ }
+ for(let i=0;i<+children.value;i++){
+  pass.push({seat:sel[i+1],phantom:true,name:names[Math.random()*names.length|0]});
+ }
+
+ await addDoc(collection(db,"tickets"),{
+  user:user?.id||"guest",
+  passengers:pass,
+  mealStatus:"created",
+  price:100
+ });
+
+ show("user");
+}
+
+// ===== RENDER TICKETS =====
+function renderTickets(){
+ ticketsDiv.innerHTML="";
+ tickets.forEach(t=>{
+  let d=document.createElement("div");
+  d.className="wallet";
+  d.innerHTML=`
+   ${t.passengers.map(p=>p.name+"("+p.seat+")").join("<br>")}
+   <br>Еда: ${t.mealStatus}
+  `;
+  tickets.appendChild(d);
+ });
+}
+
+// ===== CONFIRM MODE =====
+window.startConfirm=()=>{
+ renderPilotSeats();
+}
+
+function renderPilotSeats(){
+ pilotSeats.innerHTML="";
+ tickets.forEach(t=>{
+  t.passengers.forEach(p=>{
+   let el=document.createElement("div");
+   el.className="seat";
+
+   if(p.phantom){
+     el.classList.add("phantom");
+   }else{
+     el.onclick=()=>{
+       el.classList.toggle("confirmed");
+       if(el.classList.contains("confirmed")){
+         confirmSeats.push(p.seat);
+       }else{
+         confirmSeats=confirmSeats.filter(x=>x!==p.seat);
+       }
+     }
+   }
+
+   el.innerText=p.seat;
+   pilotSeats.appendChild(el);
+  });
+}
+
+window.applyConfirm=async()=>{
+ tickets.forEach(async t=>{
+  let penalty=0;
+
+  t.passengers.forEach(p=>{
+   if(p.phantom) return;
+
+   if(confirmSeats.includes(p.seat)){
+     p.status="ok";
+   }else{
+     p.status="no_show";
+     penalty+=30;
+   }
+  });
+
+  await updateDoc(doc(db,"tickets",t.id),{
+    passengers:t.passengers,
+    penalty
+  });
+ });
+
+ toast("Подтверждено");
+}
+
+// ===== FLIGHT =====
+window.nextStatus=()=>{
+ statusIndex=(statusIndex+1)%statuses.length;
+ updateStatusUI();
+}
+
+window.toggleTurb=()=>{
+ turb=!turb;
+ beep();
+}
+
+function beep(){
+ let ctx=new AudioContext();
+ let o=ctx.createOscillator();
+ o.connect(ctx.destination);
+ o.start();
+ o.stop(ctx.currentTime+0.2);
+}
+
+window.addProg=()=>{
+ progress+=10;
+ bar.style.width=progress+"%";
+ drawMap();
+}
+
+function drawMap(){
+ let c=map.getContext("2d");
+ c.clearRect(0,0,300,100);
+ c.beginPath();
+ c.moveTo(10,50);
+ c.lineTo(290,50);
+ c.stroke();
+ c.fillRect(10+progress*2.8,45,10,10);
+}
+
+function toast(t){
+ let el=document.getElementById("toast");
+ el.innerText=t;
+ el.style.display="block";
+ setTimeout(()=>el.style.display="none",2000);
+}
+
+</script>
+
+</body>
+</html>
